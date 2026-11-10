@@ -1,6 +1,5 @@
-/** Keep the interpreter's original message while explaining the next step. */
-export function explainRuntimeError(raw: string): string {
-  const message = raw.length > 4000 ? raw.slice(0, 4000) + "\n…（省略）" : raw;
+/** Beginner guidance only. The interpreter's raw message belongs in details. */
+export function getRuntimeErrorGuide(message: string): string {
   let guide = "";
   if (/IndentationError|TabError/.test(message))
     guide =
@@ -35,5 +34,12 @@ export function explainRuntimeError(raw: string): string {
   else if (/RangeError|MemoryError/.test(message))
     guide =
       "作るデータや繰り返しの回数が大きすぎるかもしれません。終了条件と配列の大きさを確認しよう。";
+  return guide;
+}
+
+/** Keep the interpreter's original message while explaining the next step. */
+export function explainRuntimeError(raw: string): string {
+  const message = raw.length > 4000 ? raw.slice(0, 4000) + "\n…（省略）" : raw;
+  const guide = getRuntimeErrorGuide(message);
   return guide ? `${guide}\n\n元のエラー：\n${message}` : message;
 }

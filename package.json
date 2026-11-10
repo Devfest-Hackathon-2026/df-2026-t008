@@ -4,9 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "concurrently -k \"node --env-file-if-exists=.env.local --import tsx --watch server/index.ts\" \"vite --host 127.0.0.1\"",
+    "dev": "concurrently -k \"node --env-file-if-exists=.env --env-file-if-exists=.env.local --import tsx --watch server/index.ts\" \"vite --host 127.0.0.1\"",
     "build": "tsc -b && vite build",
-    "start": "node --env-file-if-exists=.env.local --import tsx server/index.ts",
+    "start": "node --env-file-if-exists=.env --env-file-if-exists=.env.local --import tsx server/index.ts",
     "test": "node --import tsx --test tests/*.test.ts"
   },
   "dependencies": {
@@ -23,6 +23,7 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "three": "^0.180.0",
+    "tsx": "^4.23.15",
     "ws": "^8.18.0"
   },
   "devDependencies": {
@@ -33,7 +34,6 @@
     "@types/ws": "^8.5.0",
     "@vitejs/plugin-react": "^4.3.0",
     "concurrently": "^9.1.0",
-    "tsx": "^4.19.0",
     "typescript": "^5.7.0",
     "vite": "^6.0.0"
   },

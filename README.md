@@ -7,7 +7,7 @@
 
 PCブラウザで開いてJavaScriptまたはPythonを選んでください。アカウントなしのソロと匿名認証による2〜4人の協力を利用できます。Pythonの初回起動は実行環境のダウンロードに少し時間がかかります。
 
-公開版はFirebase Hostingで配信し協力状態はFirebase Realtime Databaseに保存します。Google認証の接続と本人専用のFirestore進捗保存も設定しています。Gemini APIとCloud Runは公開版では使用していません。通常の3段階ヒントは利用できます。
+公開版はFirebase Hostingで配信し協力状態はFirebase Realtime Databaseに保存します。Google認証の接続と本人専用のFirestore進捗保存も設定しています。Gemini 3.8 FlashをCloud Run経由で呼び出しヒントと実行失敗の説明を表示します。通常の3段階ヒントも利用できます。
 
 既存Google Cloudプロジェクト `photo-app-e6774` にPlease専用Hostingサイト `please-kindchord` を追加しています。既存サイトは上書きしていません。Firestoreは `pleaseUsers/{uid}/progress/{language}` に保存し既存ルールを保持したうえでこのパスだけを追加しています。
 
@@ -74,7 +74,7 @@ WASD／矢印キーで移動ドラッグで視点変更Tabで空白4つCtrl／Co
 
 現段階の協力モードは参加者同士が協力するための仕組みです。採点結果をクライアントから通知するため改造したクライアントによる不正なクリア通知までは防ぎません。ランキングや競技用途に展開する場合はサーバー側の隔離環境で再採点する必要があります。
 
-NAVIには常に使える問題別の段階ヒント・解説があります。加えて設定を行うとGeminiへの質問ボタンを使えます。AIへの質問操作をしたときだけ問題情報と編集中のコードをサーバー経由でGeminiに送ります。AIはヒント担当で正誤の確定はテストが行います。
+NAVIには常に使える問題別の段階ヒント・解説があります。加えて設定を行うとGeminiへの質問ボタンを使えます。AIへの質問時とコード実行に失敗したときに問題情報・編集中のコード・失敗した実行結果をサーバー経由でGeminiに送ります。AIはヒント担当で正誤の確定はテストが行います。
 
 ## Googleサービスの接続
 
@@ -88,7 +88,7 @@ VITE_FIREBASE_APP_ID=...
 VITE_FIREBASE_DATABASE_URL=https://your-database.firebasedatabase.app
 VITE_ENABLE_AI=false
 GEMINI_API_KEY=
-GEMINI_MODEL=gemini-2.5-flash
+GEMINI_MODEL=gemini-3.8-flash
 VITE_API_URL=
 ```
 
@@ -108,7 +108,7 @@ Firebase ConsoleでGoogleと匿名認証を有効にし利用するホストを�
 
 `VITE_ENABLE_AI=true` にし**サーバー側だけ**に `GEMINI_API_KEY` を設定します。APIキーに `VITE_` を付けないでください。ブラウザには配信しません。利用可能なモデルは `GEMINI_MODEL` で変更できます。
 
-`npm run dev` と `npm start` は存在する場合に `.env.local` を自動で読み込みます。Node.jsサーバーを直接起動する場合は例えば次のように指定します。
+`npm run dev` と `npm start` は存在する場合に `.env` と `.env.local` を順に読み込みます。Node.jsサーバーを直接起動する場合は例えば次のように指定します。
 
 ```sh
 node --env-file=.env.local --import tsx server/index.ts
@@ -137,7 +137,7 @@ gcloud run deploy knot --image YOUR_IMAGE_URL --region YOUR_REGION --max-instanc
 
 Node.js WebSocket方式をそのままCloud Runに載せる場合ルームがプロセスのメモリにあるため単一インスタンスのデモ用途に限ります。再起動やリクエスト期限による切断でもルームが失われ得ます。Google環境ではRealtime Database方式を推奨します。
 
-Firebase Hosting・匿名認証・Realtime Databaseの公開接続を設定しています。Gemini APIとCloud Runの公開接続は対象外です。コード実行はブラウザの隔離環境で実装しておりCloud Runのサンドボックスでのサーバー再採点は今後の拡張です。
+Firebase Hosting・匿名認証・Realtime Databaseの公開接続を設定しています。Gemini APIはCloud Runのサーバーで呼び出します。キーはSecret Managerで管理しブラウザには配信しません。コード実行はブラウザの隔離環境で実装しておりCloud Runのサンドボックスでのサーバー再採点は今後の拡張です。
 
 ## 問題・物語を追加する
 

@@ -8,8 +8,8 @@ FROM node:22-slim
 WORKDIR /app
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=8080
 COPY --from=build /app/package*.json ./
-# tsx is the small TypeScript launcher used by the API server.
-RUN npm ci --omit=dev && npm install --no-save tsx@4
+# tsx is declared as a production dependency for the API runtime.
+RUN npm ci --omit=dev
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/server ./server
 COPY --from=build /app/src/content ./src/content

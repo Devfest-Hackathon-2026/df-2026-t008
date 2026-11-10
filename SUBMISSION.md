@@ -14,10 +14,12 @@
 
 ## 検証
 
-- npm test：34件成功
+- npm test：54件成功
 - npm run build：成功
 - 公開URLでJavaScriptの3問を実行してゲート解放と次章への遷移を確認
 - Firestoreで本人の読み書きと別ユーザーの読み取り拒否を確認
 - 公開URLでPython実行の正解判定と2人協力の参加・修復同期・退出を確認
 
-Gemini APIとCloud Runは公開版では使用していません。AIの正誤判定を使わず実行テストで判定します。
+Gemini 3.8 FlashをCloud Runから呼び出してヒントと実行エラーの説明を返します。キーはSecret Managerに保存します。正誤はAIに任せず実行テストで判定します。
+
+公開画面でGeminiのヒントと実行失敗の説明が表示されることを確認しました。

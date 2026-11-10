@@ -36,7 +36,8 @@ import PixelSprite from "./components/PixelSprite";
 import { courses } from "./content/courses";
 import { runCode, cancelRun } from "./lib/runner";
 import { buildBossProblem } from "./lib/boss";
-import { requestAiHint } from "./lib/ai";
+import { requestAiFeedback, requestAiHint } from "./lib/ai";
+import { getRunFeedback } from "./lib/runFeedback";
 import { RoomClient } from "./lib/rooms";
 import {
   auth,
@@ -55,6 +56,7 @@ import {
 } from "./lib/progress";
 import type { Language, RunResult, RoomState } from "./types";
 
+const aiEnabled = import.meta.env.VITE_ENABLE_AI === "true";
 type View = "welcome" | "entering" | "game";
 const languageNames = { javascript: "JavaScript", python: "Python" };
 function tone(enabled: boolean, win = false) {
@@ -106,6 +108,10 @@ function App() {
   const [hintCount, setHintCount] = useState(0);
   const [aiHint, setAiHint] = useState("");
   const [aiLoading, setAiLoading] = useState(false);
+  const [runFeedback, setRunFeedback] = useState("");
+  const [feedbackLoading, setFeedbackLoading] = useState(false);
+  const [feedbackUnavailable, setFeedbackUnavailable] = useState(false);
+  const feedbackRequest = useRef<AbortController | null>(null);
   const [showSolution, setShowSolution] = useState(false);
   const [modal, setModal] = useState<
     | "story"
@@ -209,6 +215,7 @@ function App() {
     () => () => {
       client.current?.disconnect();
       cancelRun();
+      feedbackRequest.current?.abort();
     },
     [],
   );
@@ -241,6 +248,7 @@ function App() {
     return () => window.removeEventListener("beforeunload", handler);
   }, [progress, mode, language, uid, activeId, editable]);
   useEffect(() => {
+    clearFeedback();
     setActiveId(null);
     setResult(null);
     setHintCount(0);
@@ -250,6 +258,7 @@ function App() {
   }, [stageIndex, language, mode]);
   useEffect(() => {
     if (!problem) return;
+    clearFeedback();
     const draft =
       mode === "coop" ? room?.drafts[problem.id] : progress.drafts[problem.id];
     setCode(draft ?? problem.starter);
@@ -319,6 +328,7 @@ function App() {
     setActiveId(id);
   }
   function closeProblem() {
+    clearFeedback();
     if (running) cancelRun();
     flushDraft();
     if (mode === "coop" && activeId) client.current?.release(activeId);
@@ -399,6 +409,7 @@ function App() {
     const p = problem;
     const submitted = codeRef.current;
     const current = generation.current;
+    clearFeedback();
     setRunning(true);
     setResult(null);
     setTab("results");
@@ -406,6 +417,7 @@ function App() {
       const res = await runCode(language, p, submitted);
       if (current !== generation.current) return;
       setResult(res);
+      if (!res.passed) explainFailure(p.id, submitted, res, current);
       if (res.passed) {
         if (mode === "coop") {
           client.current?.draft(p.id, submitted);
@@ -418,11 +430,11 @@ function App() {
             updatedAt: Date.now(),
           }));
         tone(sound, solvedCount === stage.problems.length - 1);
-        notify("接続を復旧しました。あなたのコードが世界を動かした！");
+        notify("拠点のロックを解除。次のステージが開いた！");
       }
     } catch (e) {
-      if (current === generation.current)
-        setResult({
+      if (current === generation.current) {
+        const failure: RunResult = {
           passed: false,
           tests: [],
           duration: 0,
@@ -430,7 +442,10 @@ function App() {
             e instanceof Error
               ? e.message
               : "実行できませんでした。もう一度お試しください。",
-        });
+        };
+        setResult(failure);
+        explainFailure(p.id, submitted, failure, current);
+      }
     } finally {
       if (current === generation.current) setRunning(false);
     }
@@ -531,9 +546,51 @@ function App() {
     }
   }
   function setDraft(value: string) {
+    clearFeedback();
     setCode(value);
     codeRef.current = value;
     setResult(null);
+  }
+  function clearFeedback() {
+    feedbackRequest.current?.abort();
+    feedbackRequest.current = null;
+    setRunFeedback("");
+    setFeedbackLoading(false);
+    setFeedbackUnavailable(false);
+  }
+  function explainFailure(
+    problemId: string,
+    submitted: string,
+    failure: RunResult,
+    current: number,
+  ) {
+    if (!aiEnabled) return;
+    const controller = new AbortController();
+    feedbackRequest.current = controller;
+    setFeedbackLoading(true);
+    const isCurrent = () =>
+      !controller.signal.aborted &&
+      feedbackRequest.current === controller &&
+      current === generation.current;
+    void requestAiFeedback(
+      language,
+      problemId,
+      submitted,
+      failure,
+      controller.signal,
+    )
+      .then((text) => {
+        if (isCurrent()) setRunFeedback(text);
+      })
+      .catch(() => {
+        if (isCurrent()) setFeedbackUnavailable(true);
+      })
+      .finally(() => {
+        if (isCurrent()) {
+          setFeedbackLoading(false);
+          feedbackRequest.current = null;
+        }
+      });
   }
   async function askAi() {
     if (!problem || aiLoading) return;
@@ -1214,6 +1271,11 @@ function App() {
                       : "コードを実行"}
                     <kbd>⌘ / Ctrl ↵</kbd>
                   </button>
+                  {aiEnabled && (
+                    <p className="runtime-note ai-feedback-note">
+                      実行に失敗したときは問題・コード・実行結果をGeminiへ送りNAVIが見直すヒントを伝えます。
+                    </p>
+                  )}
                   {language === "python" && (
                     <p className="runtime-note">
                       初回はPython実行環境をダウンロードします（ネット接続が必要）。
@@ -1272,8 +1334,41 @@ function App() {
                               </small>
                             </div>
                           </div>
+                          {!result.passed && (
+                            <section
+                              className="run-feedback"
+                              aria-label="NAVIからのアドバイス"
+                              aria-busy={feedbackLoading}
+                            >
+                              <div className="run-feedback-heading">
+                                <PixelSprite />
+                                <b>NAVIと見直そう</b>
+                              </div>
+                              <p>
+                                {runFeedback || getRunFeedback(result, language)}
+                              </p>
+                              {feedbackLoading && (
+                                <small role="status">
+                                  Geminiがコードと結果を見ながら説明を考えています…
+                                </small>
+                              )}
+                              {runFeedback && (
+                                <small>
+                                  Geminiからのヒントです。直したらもう一度実行して確かめよう。
+                                </small>
+                              )}
+                              {feedbackUnavailable && (
+                                <small>
+                                  Geminiにつながらないため通常のガイドを表示しています。ヒントと解説も使えます。
+                                </small>
+                              )}
+                            </section>
+                          )}
                           {result.error && (
-                            <pre className="error-message">{result.error}</pre>
+                            <details className="error-details">
+                              <summary>エラーの詳細を見る</summary>
+                              <pre className="error-message">{result.error}</pre>
+                            </details>
                           )}
                           {result.tests.map((t, i) => (
                             <div
