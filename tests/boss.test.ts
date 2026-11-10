@@ -72,8 +72,8 @@ for (const language of ["javascript", "python"] as const) {
     const power = courses[language].stages
       .find((s) => s.kind === "boss")!
       .problems.find((p) => p.functionName === "distribute")!;
-    // A third instead of a double is not just a different intermediate value:
-    // [12,12] now yields energy 72, improperly turning on the final network.
+    // Mutating the upstream allocation changes the report consumed by authorization.
+    // The selected independent circuit now produces36 instead of24.
     drafts[power.id] = power.solution.replace("* 2", "* 3");
     const { problem, code } = buildBossProblem(language, drafts);
     const inputs = [problem.tests[2].input];
@@ -81,8 +81,8 @@ for (const language of ["javascript", "python"] as const) {
       language === "javascript"
         ? jsResults(code, problem.functionName, inputs)
         : pythonResults(code, problem.functionName, inputs);
-    assert.equal((actual as { energy: number }).energy, 72);
-    assert.equal((actual as { online: boolean }).online, true);
+    assert.equal((actual as { report: { energy: number } }).report.energy, 36);
+    assert.equal((actual as { online: boolean }).online, false);
     assert.notDeepEqual(actual, problem.tests[2].expected);
   });
 

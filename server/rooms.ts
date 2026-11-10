@@ -121,6 +121,33 @@ export class RoomRegistry {
         if (!room.solved.includes(problem!.id)) room.solved.push(problem!.id);
         delete room.locks[problem!.id];
         break;
+      case "selectStage": {
+        const target = event.stageIndex;
+        const stages = courses[room.language].stages;
+        if (
+          typeof target !== "number" ||
+          !Number.isInteger(target) ||
+          target < 0 ||
+          target >= stages.length
+        )
+          throw new RoomError("ステージを選び直してください。");
+        if (
+          !stages
+            .slice(0, target)
+            .every((previous) =>
+              previous.problems.every((p) => room.solved.includes(p.id)),
+            )
+        )
+          throw new RoomError("手前のステージをクリアしてから進みましょう。");
+        if (room.stageIndex === target) return room;
+        room.stageIndex = target;
+        room.locks = {};
+        room.players.forEach((p) => {
+          p.x = 0;
+          p.z = 3;
+        });
+        break;
+      }
       case "advance":
         if (!stage.problems.every((p) => room.solved.includes(p.id)))
           throw new RoomError("全ての端末を修復してから先へ進みましょう。");

@@ -368,6 +368,32 @@ export class FirebaseRoomClient {
       }
     });
   }
+  selectStage(stageIndex: number) {
+    this.update((room) => {
+      const stages = courses[room.language].stages;
+      if (
+        !Number.isInteger(stageIndex) ||
+        stageIndex < 0 ||
+        stageIndex >= stages.length
+      )
+        throw new Error("ステージを選び直してください。");
+      if (
+        !stages
+          .slice(0, stageIndex)
+          .every((stage) =>
+            stage.problems.every((problem) => room.solved?.[problem.id]),
+          )
+      )
+        throw new Error("手前のステージをクリアしてから進みましょう。");
+      if (room.stageIndex === stageIndex) return;
+      room.stageIndex = stageIndex;
+      room.locks = {};
+      Object.values(room.players ?? {}).forEach((player) => {
+        player.x = 0;
+        player.z = 3;
+      });
+    });
+  }
   move(x: number, z: number) {
     if (
       !Number.isFinite(x) ||

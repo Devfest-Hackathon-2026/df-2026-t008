@@ -1,4 +1,5 @@
 import type { Course, Language, Problem, Stage, TestCase } from "../types";
+import { buildCampaign } from "./campaign";
 
 /**
  * 問題を増やすときは説明・初期コード・正解例・テストを一組で追加します。
@@ -492,11 +493,16 @@ function stages(language: Language): Stage[] {
   ];
 }
 
-export const courses: Record<Language, Course> = {
+export const legacyCourses: Record<Language, Course> = {
   javascript: {
     language: "javascript",
     label: "JavaScript",
     stages: stages("javascript"),
   },
   python: { language: "python", label: "Python", stages: stages("python") },
+};
+
+export const courses: Record<Language, Course> = {
+  javascript: buildCampaign("javascript", legacyCourses.javascript),
+  python: buildCampaign("python", legacyCourses.python),
 };

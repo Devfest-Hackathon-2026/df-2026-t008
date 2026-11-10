@@ -33,7 +33,11 @@ const noise = (x: number, z: number, salt = 0) => {
   return n - Math.floor(n);
 };
 
-export function buildWorldScenery(stageIndex: number, voxel: Voxel): void {
+export function buildWorldScenery(
+  stageIndex: number,
+  voxel: Voxel,
+  includeDistricts = true,
+): void {
   const chapter = Math.max(0, Math.min(3, stageIndex));
   const accent = [C.green, C.yellow, C.cyan, C.red][chapter];
 
@@ -168,6 +172,8 @@ export function buildWorldScenery(stageIndex: number, voxel: Voxel): void {
       voxel(x, 0.23, 6.8 - Math.abs(x) * 0.25, 0.14, 0.07, 0.14, accent);
     }
   }
+
+  if (!includeDistricts) return;
 
   const building = (
     x: number,

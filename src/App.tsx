@@ -4,7 +4,7 @@ import { javascript } from "@codemirror/lang-javascript";
 import { indentUnit } from "@codemirror/language";
 import { EditorState, Prec } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowRight,
   ArrowUpRight,
@@ -33,7 +33,16 @@ import {
 import { onAuthStateChanged, type User } from "firebase/auth";
 import World from "./components/World";
 import PixelSprite from "./components/PixelSprite";
+import StageMap from "./components/StageMap";
+import {
+  CAMPAIGN_LAYERS,
+  isStageUnlocked,
+  layerForStage,
+  stageIsComplete,
+  stageProgress as getCampaignProgress,
+} from "./lib/campaign";
 import { courses } from "./content/courses";
+import { javascriptWordGuide, pythonWordGuide } from "./content/campaign";
 import { runCode, cancelRun } from "./lib/runner";
 import { buildBossProblem } from "./lib/boss";
 import { requestAiFeedback, requestAiHint } from "./lib/ai";
@@ -52,13 +61,89 @@ import {
   loadProgress,
   saveProgress,
   mergeProgress,
+  migrateProgress,
   type Progress,
 } from "./lib/progress";
 import type { Language, RunResult, RoomState } from "./types";
 
-const aiEnabled = import.meta.env.VITE_ENABLE_AI === "true";
 type View = "welcome" | "entering" | "game";
 const languageNames = { javascript: "JavaScript", python: "Python" };
+const aiEnabled = import.meta.env.VITE_ENABLE_AI === "true";
+function GuideEntries({
+  entries,
+  kind,
+}: {
+  entries: string[][];
+  kind: "reference" | "glossary";
+}) {
+  const [query, setQuery] = useState("");
+  const normalize = (value: string) => value.normalize("NFKC").toLowerCase();
+  const keyword = normalize(query.trim());
+  const visible = entries.filter((entry) =>
+    normalize(entry.join("\n")).includes(keyword),
+  );
+  const searchId = `guide-search-${kind}`;
+  return (
+    <>
+      <div className="guide-search">
+        <label htmlFor={searchId}>手引きを検索</label>
+        <div className="guide-search-controls">
+          <input
+            id={searchId}
+            type="search"
+            placeholder="例：繰り返す、return"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+          {query && (
+            <button type="button" onClick={() => setQuery("")}>
+              クリア
+            </button>
+          )}
+        </div>
+        <p role="status">
+          {visible.length === 0
+            ? "見つかりませんでした。別のことばで検索してみよう。"
+            : `${visible.length} / ${entries.length} 件`}
+        </p>
+      </div>
+      {visible.length > 0 &&
+        (kind === "glossary" ? (
+          <dl>
+            {visible.map(([term, meaning]) => (
+              <div key={term}>
+                <dt>{term}</dt>
+                <dd>{meaning}</dd>
+              </div>
+            ))}
+          </dl>
+        ) : (
+          <div className="reference-grid">
+            {visible.map(([label, example, description, result]) => (
+              <div key={label}>
+                <b>{label}</b>
+                {description && <p>{description}</p>}
+                <pre>{example}</pre>
+                {result?.split("\n").map((step, index) => (
+                  <p key={index}>{step}</p>
+                ))}
+              </div>
+            ))}
+          </div>
+        ))}
+    </>
+  );
+}
+function WordGuide({ language }: { language: Language }) {
+  const words = language === "python" ? pythonWordGuide : javascriptWordGuide;
+  return (
+    <section className="word-guide" aria-labelledby="word-guide-title">
+      <h2 id="word-guide-title">ことばの手引き</h2>
+      <p>詳しくは自分でも調べてみよう！</p>
+      <GuideEntries key={language} entries={words} kind="glossary" />
+    </section>
+  );
+}
 function tone(enabled: boolean, win = false) {
   if (!enabled) return;
   try {
@@ -116,6 +201,7 @@ function App() {
   const [modal, setModal] = useState<
     | "story"
     | "reference"
+    | "glossary"
     | "help"
     | "ending"
     | "transition"
@@ -125,6 +211,9 @@ function App() {
   >(null);
   const [integration, setIntegration] = useState<RunResult | null>(null);
   const [integrating, setIntegrating] = useState(false);
+  const [justCompletedStage, setJustCompletedStage] = useState<number | null>(
+    null,
+  );
   const [sound, setSound] = useState(
     () => localStorage.getItem("knot.sound") === "true",
   );
@@ -148,6 +237,33 @@ function App() {
   const solvedCount = stage.problems.filter((p) =>
     solved.includes(p.id),
   ).length;
+  const completed =
+    mode === "coop" ? room?.completed === true : progress.completed;
+  const campaignProgress = useMemo(
+    () => getCampaignProgress(solved, course),
+    [solved, course],
+  );
+  const depthProgress = campaignProgress.depth * 12;
+  const layerIndex = layerForStage(stageIndex);
+  const layerNames = CAMPAIGN_LAYERS.map((layer) => layer.name);
+  const difficultyNames = ["入門", "応用", "上級", "最難関"];
+  const stageStates = useMemo(
+    () => ({
+      unlocked: course.stages.flatMap((_, index) =>
+        isStageUnlocked(index, course, solved) ? [index] : [],
+      ),
+      cleared: course.stages.flatMap((_, index) =>
+        stageIsComplete(index, course, solved) ? [index] : [],
+      ),
+    }),
+    [course, solved],
+  );
+  const stageTravelProgress =
+    stage.kind === "boss"
+      ? solvedCount / stage.problems.length
+      : justCompletedStage === stageIndex
+        ? 1
+        : 0;
   const lockOwner = problem && room ? room.locks[problem.id] : null;
   const mine = !lockOwner || lockOwner === client.current?.playerId;
   const playerName = room?.players.find((p) => p.id === lockOwner)?.name;
@@ -180,7 +296,10 @@ function App() {
       readCloudProgress(uid, language)
         .then((p) => {
           if (alive) {
-            if (p) setProgress((current) => mergeProgress(current, p));
+            if (p)
+              setProgress((current) =>
+                mergeProgress(current, migrateProgress(language, p), language),
+              );
             setCloudReady(`${uid}:${language}`);
           }
         })
@@ -255,6 +374,7 @@ function App() {
     setShowSolution(false);
     generation.current++;
     setRunning(false);
+    setJustCompletedStage(null);
   }, [stageIndex, language, mode]);
   useEffect(() => {
     if (!problem) return;
@@ -275,6 +395,10 @@ function App() {
   useEffect(() => {
     if (mode === "coop" && problem && !editable) {
       const draft = room?.drafts[problem.id] ?? problem.starter;
+      if (draft !== codeRef.current) {
+        clearFeedback();
+        setResult(null);
+      }
       setCode(draft);
       codeRef.current = draft;
     }
@@ -352,6 +476,28 @@ function App() {
         : "story",
     );
   }
+  function visitStage(index: number) {
+    if (
+      viewRef.current === "entering" ||
+      !isStageUnlocked(index, course, solved)
+    )
+      return;
+    if (index === stageIndex && viewRef.current === "game") return;
+    closeProblem();
+    setJustCompletedStage(null);
+    if (mode === "coop") {
+      if (!client.current || connection !== "connected") return;
+      client.current.selectStage(index);
+    } else {
+      setProgress((current) => ({
+        ...current,
+        version: 2,
+        stageIndex: index,
+        updatedAt: Date.now(),
+      }));
+    }
+    if (viewRef.current === "welcome") enterWorld();
+  }
   async function startSolo() {
     if (viewRef.current !== "welcome") return;
     setError("");
@@ -419,6 +565,8 @@ function App() {
       setResult(res);
       if (!res.passed) explainFailure(p.id, submitted, res, current);
       if (res.passed) {
+        if (!solved.includes(p.id) && solvedCount === stage.problems.length - 1)
+          setJustCompletedStage(stageIndex);
         if (mode === "coop") {
           client.current?.draft(p.id, submitted);
           client.current?.solve(p.id);
@@ -516,6 +664,7 @@ function App() {
         const localMerged = mergeProgress(
           loadProgress(l, previousUid),
           loadProgress(l, u.uid),
+          l,
         );
         saveProgress(l, localMerged, u.uid);
         if (l === languageRef.current && uidRef.current === u.uid)
@@ -526,7 +675,11 @@ function App() {
         try {
           const cloud = await readCloudProgress(u.uid, l);
           const merged = cloud
-            ? mergeProgress(loadProgress(l, u.uid), cloud)
+            ? mergeProgress(
+                loadProgress(l, u.uid),
+                migrateProgress(l, cloud),
+                l,
+              )
             : loadProgress(l, u.uid);
           saveProgress(l, merged, u.uid);
           if (l === languageRef.current && uidRef.current === u.uid)
@@ -625,6 +778,12 @@ function App() {
             : "playing"
       }
       onEntered={finishEntry}
+      depthProgress={depthProgress}
+      completed={completed}
+      onSelectStage={visitStage}
+      unlockedStageIndices={stageStates.unlocked}
+      clearedStageIndices={stageStates.cleared}
+      stageProgress={stageTravelProgress}
       solved={solved}
       problems={stage.problems}
       activeProblemId={activeId}
@@ -703,7 +862,11 @@ function App() {
           <div className="entry-message">
             <span className="eyebrow">ENTER THE COMMONS</span>
             <h1 role="status">ワールドに参戦中</h1>
-            <p>球の向こうへ。コモンズが待っている。</p>
+            <p>
+              {stageIndex === 0
+                ? "拠点01へ接続。ここから中心を目指そう。"
+                : `${layerNames[layerIndex]}から探索を再開しよう。`}
+            </p>
             <div className="entry-progress" aria-hidden="true">
               <i />
             </div>
@@ -723,14 +886,14 @@ function App() {
               Please<span>CONNECT THE WORLD</span>
             </div>
             <h1>
-              コードを直せ。
+              コードで道を開け。
               <br />
-              この世界を取り戻せ。
+              球の中心を目指せ。
             </h1>
             <p className="welcome-lead">
-              仮想世界《コモンズ》で接続障害が発生！
+              問題を解くほど球の奥深くへ。
               <br />
-              バグった端末を修復して仲間とゲートを突破しよう。
+              外縁から層を突破し中心のコアを復旧しよう。
             </p>
             <section className="launch-card">
               <div className="console-window-bar">
@@ -863,8 +1026,8 @@ function App() {
             </div>
           </main>
           <div className="welcome-world-caption">
-            <span className="live-dot" /> THE COMMONS / SECTOR 01 <i /> SYSTEM
-            ERROR : 03 NODES
+            <span className="live-dot" /> OUTER → MIDDLE → INNER → CORE <i /> 54
+            STAGES
           </div>
         </>
       ) : view === "game" ? (
@@ -875,13 +1038,13 @@ function App() {
                 MISSION CONTROL <span className="small-line" />
               </div>
               <h1>
-                WORLD MAP
+                CORE ROUTE
                 <span className="hud-world-name">仮想世界 コモンズ</span>
               </h1>
               <p className="sidebar-intro">
                 {stage.kind === "boss"
-                  ? "最終防衛ライン：世界サーバー"
-                  : `エリア ${String(stageIndex + 1).padStart(2, "0")} の接続を取り戻せ。`}
+                  ? "中心核の復旧処理を完成させよう。"
+                  : `${layerNames[layerIndex]}のロックを解いて中心へ。`}
               </p>
               <div className="course-pill">
                 <span className={`lang-icon small ${language}`}>
@@ -890,33 +1053,14 @@ function App() {
                 {course.label}
                 <span>{mode === "solo" ? "SOLO" : "CO-OP"}</span>
               </div>
-              <nav className="stage-list" aria-label="冒険のステージ">
-                {course.stages.map((s, i) => (
-                  <div
-                    key={s.id}
-                    className={`stage-item ${i === stageIndex ? "current" : ""} ${i < stageIndex ? "done" : ""}`}
-                  >
-                    <span className="stage-number">
-                      {i < stageIndex ? (
-                        <Check size={14} />
-                      ) : i > stageIndex ? (
-                        <LockKeyhole size={13} />
-                      ) : (
-                        String(i + 1).padStart(2, "0")
-                      )}
-                    </span>
-                    <div>
-                      <small>
-                        {i === course.stages.length - 1
-                          ? "FINAL CHAPTER"
-                          : `CHAPTER ${String(i + 1).padStart(2, "0")}`}
-                      </small>
-                      <b>{s.title}</b>
-                    </div>
-                    {i === stageIndex && <span className="live-dot" />}
-                  </div>
-                ))}
-              </nav>
+              <StageMap
+                course={course}
+                selectedIndex={stageIndex}
+                solved={solved}
+                completed={completed}
+                onSelect={visitStage}
+                disabled={mode === "coop" && connection !== "connected"}
+              />
               <button
                 className="reference-link"
                 onClick={() => setModal("reference")}
@@ -924,6 +1068,17 @@ function App() {
                 <BookOpen size={17} />
                 <span>
                   コードの手引き<small>いつでもここでおさらい。</small>
+                </span>
+                <ArrowUpRight size={16} />
+              </button>
+              <button
+                className="reference-link"
+                aria-label="ことばの手引き"
+                onClick={() => setModal("glossary")}
+              >
+                <BookOpen size={17} />
+                <span>
+                  ことばの手引き<small>ことばの意味を調べる。</small>
                 </span>
                 <ArrowUpRight size={16} />
               </button>
@@ -942,9 +1097,12 @@ function App() {
                   <span className="eyebrow">
                     {stage.kind === "boss"
                       ? "FINAL OPERATION"
-                      : "RESTORE THE NETWORK"}
+                      : "DESCEND TO THE CORE"}
                   </span>
-                  <h2>{stage.location}</h2>
+                  <h2>
+                    {layerNames[layerIndex]}・{difficultyNames[layerIndex]} /{" "}
+                    {String(stageIndex + 1).padStart(2, "0")}
+                  </h2>
                 </div>
                 <button
                   className="story-button"
@@ -958,9 +1116,15 @@ function App() {
                   {allSolved ? "CONNECTION RESTORED" : "SYSTEM CORRUPTED"}
                 </span>
                 <b>
-                  {stage.kind === "boss" ? "THE WORLD CORE" : "THE COMMONS"}
+                  {stage.kind === "boss"
+                    ? "THE WORLD CORE"
+                    : `${layerNames[layerIndex]} → CORE`}
                 </b>
-                <small>端末をクリックしてミッションを開始</small>
+                <small>
+                  {campaignProgress.allComplete
+                    ? "中心に到達。最後の接続を実行しよう。"
+                    : `拠点 ${stageIndex + 1} / ${course.stages.length} ・ ${stage.problems[0]?.concept}`}
+                </small>
               </div>
               {allSolved && (
                 <div className="gate-banner">
@@ -974,7 +1138,7 @@ function App() {
                     <small>
                       {stage.kind === "boss"
                         ? "最後の接続を実行しよう。"
-                        : "ゲートが開いた。次の世界が待っている。"}
+                        : "次の拠点が解放された。中心へ進もう。"}
                     </small>
                   </div>
                   <button
@@ -985,7 +1149,7 @@ function App() {
                         : setModal("transition")
                     }
                   >
-                    {stage.kind === "boss" ? "世界をつなぐ" : "次のエリアへ"}
+                    {stage.kind === "boss" ? "世界をつなぐ" : "次の拠点へ"}
                     <ArrowRight size={16} />
                   </button>
                 </div>
@@ -1273,7 +1437,7 @@ function App() {
                   </button>
                   {aiEnabled && (
                     <p className="runtime-note ai-feedback-note">
-                      実行に失敗したときは問題・コード・実行結果をGeminiへ送りNAVIが見直すヒントを伝えます。
+                      つまずいたときは問題・コード・実行結果をGeminiに送り、NAVIが見直すヒントを伝えます。
                     </p>
                   )}
                   {language === "python" && (
@@ -1329,8 +1493,9 @@ function App() {
                                   : "あと少し。コードを見直してみよう。"}
                               </b>
                               <small>
-                                {result.tests.filter((t) => t.passed).length} /{" "}
-                                {result.tests.length} テスト成功
+                                {result.tests.length
+                                  ? `${result.tests.filter((t) => t.passed).length} / ${result.tests.length} テスト成功`
+                                  : "コードの実行を完了できませんでした"}
                               </small>
                             </div>
                           </div>
@@ -1393,11 +1558,18 @@ function App() {
                                     <small>
                                       実際の結果:{" "}
                                       <code>
-                                        {t.error ||
-                                          JSON.stringify(t.actual) ||
-                                          "値が返されていません"}
+                                        {t.error
+                                          ? "この入力の処理中に止まりました"
+                                          : JSON.stringify(t.actual) ||
+                                            "値が返されていません"}
                                       </code>
                                     </small>
+                                    {t.error && (
+                                      <details className="error-details">
+                                        <summary>エラーの詳細を見る</summary>
+                                        <pre className="error-message">{t.error}</pre>
+                                      </details>
+                                    )}
                                   </>
                                 )}
                               </div>
@@ -1492,7 +1664,7 @@ function App() {
                           </button>
                         </div>
                       )}
-                      {import.meta.env.VITE_ENABLE_AI === "true" && (
+                      {aiEnabled && (
                         <div className="ai-live">
                           <button
                             className="secondary"
@@ -1530,9 +1702,11 @@ function App() {
             aria-label={
               modal === "reference"
                 ? "コードの手引き"
-                : modal === "help"
-                  ? "操作ガイド"
-                  : "物語"
+                : modal === "glossary"
+                  ? "ことばの手引き"
+                  : modal === "help"
+                    ? "操作ガイド"
+                    : "物語"
             }
             onClick={(e) => e.stopPropagation()}
           >
@@ -1594,8 +1768,16 @@ function App() {
                             : "接続が不安定です。関数を見直してみよう。"}
                         </b>
                       </div>
+                      {!integration.passed && (
+                        <p className="explanation">
+                          {getRunFeedback(integration, language)}
+                        </p>
+                      )}
                       {integration.error && (
-                        <pre className="error-message">{integration.error}</pre>
+                        <details className="error-details">
+                          <summary>エラーの詳細を見る</summary>
+                          <pre className="error-message">{integration.error}</pre>
+                        </details>
                       )}
                       {integration.tests.map((t, i) => (
                         <div
@@ -1625,11 +1807,26 @@ function App() {
                 <span className="modal-symbol">
                   <PixelSprite />
                 </span>
-                <div className="eyebrow">CHAPTER COMPLETE</div>
-                <h2>またひとつ世界が動き出す。</h2>
+                <div className="eyebrow">STAGE COMPLETE</div>
+                <h2>拠点{String(stageIndex + 1).padStart(2, "0")}を修復。</h2>
+                <p className="layer-briefing">
+                  次は拠点
+                  {String(
+                    Math.min(stageIndex + 2, course.stages.length),
+                  ).padStart(2, "0")}
+                  。
+                  {
+                    layerNames[
+                      layerForStage(
+                        Math.min(stageIndex + 1, course.stages.length - 1),
+                      )
+                    ]
+                  }
+                  へ進もう。
+                </p>
                 <p className="story-text">{stage.outro}</p>
                 <button className="primary" onClick={advance}>
-                  次のエリアへ進む
+                  次の拠点へ進む
                   <ArrowRight size={16} />
                 </button>
               </>
@@ -1639,17 +1836,23 @@ function App() {
                   <PixelSprite />
                 </span>
                 <div className="eyebrow">
-                  CHAPTER {String(stageIndex + 1).padStart(2, "0")} /{" "}
-                  {stage.location}
+                  STAGE {String(stageIndex + 1).padStart(2, "0")} /{" "}
+                  {course.stages.length} / {stage.location}
                 </div>
                 <h2>{stage.title}</h2>
                 <p className="modal-subtitle">{stage.subtitle}</p>
+                <p className="layer-briefing">
+                  {layerNames[layerIndex]} /{" "}
+                  {stage.kind === "boss"
+                    ? "球の最奥。3つの関数を完成させ中心核へ到達しよう。"
+                    : "この拠点の問題を解いて次のステージを解放しよう。"}
+                </p>
                 <p className="story-text">{stage.intro}</p>
                 <div className="story-goal">
                   <Flag size={17} />
                   {stage.kind === "boss"
                     ? "3つの関数を一から実装し世界の接続を取り戻そう。"
-                    : "すべての端末を修復して次のエリアへのゲートを開こう。"}
+                    : "問題を修復して次の拠点へのゲートを開こう。"}
                 </div>
                 <button className="primary" onClick={() => setModal(null)}>
                   この世界をつなぎにいこう
@@ -1672,7 +1875,7 @@ function App() {
                 </p>
                 <div className="ending-stats">
                   <span>
-                    <b>{course.stages.length}</b> CHAPTERS
+                    <b>{course.stages.length}</b> STAGES
                   </span>
                   <span>
                     <b>
@@ -1700,64 +1903,265 @@ function App() {
                   <ArrowRight size={17} />
                 </button>
               </>
+            ) : modal === "glossary" ? (
+              <>
+                <div className="eyebrow">
+                  WORD GUIDE / {languageNames[language].toUpperCase()}
+                </div>
+                <WordGuide language={language} />
+              </>
             ) : modal === "reference" ? (
               <>
                 <div className="eyebrow">
                   FIELD GUIDE / {languageNames[language].toUpperCase()}
                 </div>
                 <h2>コードの手引き</h2>
-                <p>覚えていなくても大丈夫。使いながら少しずつ。</p>
-                <div className="reference-grid">
-                  {(language === "javascript"
+                <p>
+                  {language === "python"
+                    ? "例を見ながら、必要なところだけ使ってみよう。# より右は説明で、実行されません。"
+                    : "例を見ながら、必要なところだけ使ってみよう。// より右は説明で、実行されません。"}
+                </p>
+                <GuideEntries
+                  key={language}
+                  kind="reference"
+                  entries={language === "javascript"
                     ? [
-                        ["値を名前に入れる", "const energy = 80;"],
                         [
-                          "条件によって分ける",
-                          "if (energy >= 50) {\n  return true;\n}\nreturn false;",
+                          "値を保存する",
+                          "let energy = 10;\nenergy = energy + 3;",
+                          "let はあとで値を変えられる名前、const は代入し直さない名前を作ります。= は右側の値を左側の名前に保存します。",
+                          "energy は最初に10になり、次の行で10 + 3を計算して13に変わります。",
                         ],
                         [
-                          "順番に繰り返す",
-                          "for (const value of values) {\n  total += value;\n}",
+                          "文字を扱う",
+                          'const name = "navi";\nconst message = "接続先: " + name;\nconst sign = name.toUpperCase();',
+                          '文字や言葉は半角の " で囲みます。+ で文字同士をつなぎ、toUpperCase() で英字を大文字にします。',
+                          "message は「接続先: navi」、sign は「NAVI」になります。",
                         ],
                         [
-                          "関数から結果を返す",
+                          "計算する",
+                          "const total = 3 + 2; // 5\nconst left = 3 - 2;  // 1\nconst power = 3 * 2; // 6\nconst share = 3 / 2; // 1.5\nconst rest = 3 % 2;  // 1",
+                          "+ は足し算、- は引き算、* は掛け算、/ は割り算です。% は割った余りを求めます。",
+                          "3を2で割ると1余るので、3 % 2 の結果は1です。計算結果はそれぞれ左側の名前に保存されます。",
+                        ],
+                        [
+                          "結果を返す",
                           "function double(value) {\n  return value * 2;\n}",
+                          "function で処理に名前を付けます。value は受け取る値の名前、return は答えを返す命令です。",
+                          "double(3) を使うと、value に3が入り、3 × 2の答えである6を返します。このサイトでは返した答えで採点します。",
                         ],
                         [
-                          "配列と比較",
-                          "const list = [10, 20, 30];\n// 等しい: ===  異なる: !==\n// かつ: &&  または: ||",
+                          "条件を調べる",
+                          "const energy = 20;\nconst safe = true;\nconst same = energy === 20;\nconst ready = energy >= 10 && safe;",
+                          "=== は「等しい」、>= は「以上」を調べます。&& は両方、|| は片方でも条件が成り立てばOKです。",
+                          "20は20と等しいので same は true。20は10以上で safe も true なので、ready も true です。成り立たない場合は false になります。",
+                        ],
+                        [
+                          "条件で分ける",
+                          'function label(energy) {\n  if (energy >= 10) {\n    return "OK";\n  } else {\n    return "充電";\n  }\n}',
+                          "if の条件が成り立つときは、その後の { } の中を実行します。成り立たないときは else の { } の中を実行します。",
+                          "label(20) は「OK」、label(5) は「充電」を返します。どちらか一方の処理だけを実行します。",
+                        ],
+                        [
+                          "配列を使う",
+                          "const values = [2, 4];\nconst first = values[0];\nconst count = values.length;\nvalues.push(6);",
+                          "[ ] で複数の値をまとめます。[0] は先頭の値、length は個数を調べます。push() は最後に値を足します。",
+                          "first は2、追加前の個数を調べた count は2です。6を足した後の values は [2, 4, 6] になります。const で作った配列にも値を追加できます。",
+                        ],
+                        [
+                          "二次元配列を使う",
+                          "const grid = [\n  [1, 2, 3],\n  [4, 5, 6],\n];\nconst firstRow = grid[0];\nconst value = grid[0][1];\nconst rows = grid.length;\nconst columns = grid[0].length;",
+                          "二次元配列は、値を行と列で並べたものです。行は横の並び、列は縦の並びです。1行ずつ配列にして、さらに1つの配列にまとめて表せます。この例は2行3列です。",
+                          "grid[行の番号][列の番号] で値を取り出します。番号はどちらも0から数えます。\ngrid[0] は最初の行なので、firstRow は [1, 2, 3] です。grid[0][1] はその行の2番目の値なので、value は2です。\ngrid.length は行の数なので rows は2、grid[0].length は最初の行にある値の数なので columns は3です。",
+                        ],
+                        [
+                          "配列の一部分を取り出す",
+                          "const values = [10, 20, 30, 40];\nconst middle = values.slice(1, 3);\nconst tail = values.slice(2);\nconst head = values.slice(0, 2);",
+                          "slice(開始位置, 終了位置) で一部分を取り出します。位置は0から数え、開始位置は含み、終了位置は含みません。終了位置を省略すると、最後まで取り出します。",
+                          "values.slice(1, 3) は位置1と2の値なので、middle は [20, 30] です。\nvalues.slice(2) は位置2から最後までの [30, 40]、values.slice(0, 2) は先頭から位置2の手前までの [10, 20] です。元の values は変わりません。",
+                        ],
+                        [
+                          "取り出した配列をつなぐ",
+                          "const values = [10, 20, 30, 40];\nconst offset = 2;\nconst back = values.slice(offset);\nconst front = values.slice(0, offset);\nconst rotated = back.concat(front);",
+                          "offset は、区切る位置を入れた変数です。この例は2なので、values.slice(offset) は values.slice(2) と同じです。concat() は、後ろに別の配列をつないだ新しい配列を作ります。",
+                          "後半の back は [30, 40]、前半の front は [10, 20] です。\nback.concat(front) の結果は [30, 40, 10, 20]。元の values は変わりません。",
+                        ],
+                        [
+                          "繰り返す",
+                          "const values = [2, 4, 6];\nlet total = 0;\nfor (const value of values) {\n  total = total + value;\n}",
+                          "for は、配列の値を先頭から1つずつ取り出します。そのたびに、{ } の中の処理を実行します。",
+                          "value に2、4、6が順に入り、total は0 → 2 → 6 → 12と変わります。最後の合計は12です。",
+                        ],
+                        [
+                          "条件が成り立つ間は繰り返す",
+                          "let remaining = 3;\nwhile (remaining > 0) {\n  remaining = remaining - 1;\n}",
+                          "while は、条件が成り立つ間、{ } の中の処理を繰り返します。> は「より大きい」なので、この例では remaining が0より大きい間、1ずつ減らします。",
+                          "remaining は3 → 2 → 1 → 0と変わります。毎回、処理の前に条件を調べ、0になると条件が成り立たなくなって止まります。初めから0なら、一度も繰り返しません。\nこの例で1を引く行がないと、条件がずっと成り立ち、繰り返しが終わりません。",
+                        ],
+                        [
+                          "入れ子で繰り返す",
+                          "const grid = [[1, 2], [3, 4]];\nconst values = [];\nfor (const row of grid) {\n  for (const value of row) {\n    values.push(value);\n  }\n}",
+                          "for の内側に、もう1つ for を書くこともできます。このように内側へ構造を重ねることを「入れ子」と呼びます。grid は配列の中に配列を入れたもので、[1, 2] と [3, 4] の2行を表しています。",
+                          "外側の for は1行ずつ row に入れ、内側の for はその行の値を1つずつ取り出します。1行目の1 → 2を終えてから、2行目の3 → 4に進むので、values は [1, 2, 3, 4] になります。\nそれぞれの { } が処理のまとまりです。内側の行をさらに字下げすると、どの処理の内側かが見やすくなります。",
+                        ],
+                        [
+                          "番号を使って繰り返す",
+                          "const positions = [];\nfor (let index = 0; index < 3; index = index + 1) {\n  positions.push(index);\n}",
+                          "for の丸かっこの中には、開始時の準備・続ける条件・1回終わるごとの処理を ; で区切って書きます。index は番号を入れるために付けた変数名です。",
+                          "最初に index を0にし、index < 3 の間、{ } の中を実行します。1回終わるごとに1を足すので、index は0 → 1 → 2と進み、positions は [0, 1, 2] になります。3になると条件が成り立たず止まります。",
+                        ],
+                        [
+                          "後ろから1文字ずつ読む",
+                          'const text = "ABC";\nlet result = "";\nfor (let index = text.length - 1; index >= 0; index = index - 1) {\n  result = result + text[index];\n}',
+                          "文字の位置は0から数えるので、最後の位置は text.length - 1 です。そこから1ずつ番号を減らすと、最後の文字から先頭へ読めます。",
+                          "text.length は3なので、開始位置は3 - 1 = 2です。index >= 0 の間、番号を2 → 1 → 0と減らします。\n読む文字は text[2] → text[1] → text[0]、つまり C → B → Aです。result は「CBA」になります。index が -1 になると止まります。",
+                        ],
+                        [
+                          "見た値を集合に覚えておく",
+                          "const seen = new Set();\nseen.add(4);\nseen.add(4);\nseen.add(7);\nconst count = seen.size;",
+                          "new Set() は同じ値を重ねて持たない「集合」を作ります。add() は値を登録し、size は登録した値の個数を調べます。seen は「すでに見た値」に付けた名前です。",
+                          "4を2回登録しても、覚えるのは4と7の2種類だけなので count は2です。seen.has(value) で、すでに見た値かを調べられます。\nこのコースの参考解答では、集合で「見たかどうか」を調べ、別の配列に結果を追加して返す形を使います。",
+                        ],
+                        [
+                          "入っているかを調べる",
+                          "const destinations = [4, 7];\nconst already = destinations.includes(4);\nconst missing = !destinations.includes(2);",
+                          "includes() は、配列に値が入っているかを調べます。結果は true か false です。! はその結果を反対にするので、「入っていないか」を調べられます。集合では includes() の代わりに has() を使います。",
+                          "4は中にあるので already は true。2は中にないので missing も true です。\nif (!result.includes(value)) のときだけ result.push(value) を実行すれば、まだない値だけを追加できます。[4, 7, 4] を先頭から見ると、結果は [] → [4] → [4, 7] となり、2回目の4は追加しません。",
+                        ],
+                        [
+                          "辞書としてオブジェクトを使う",
+                          'const counts = Object.create(null);\ncounts["blue"] = 2;\nconst blueCount = counts["blue"];\ncounts["red"] = 1;',
+                          '辞書は、目印と値を組にして覚える仕組みです。JavaScriptではオブジェクトを使って表せます。Object.create(null) で空の辞書を作り、counts["blue"] = 2 でキー "blue" に値2を保存します。キーは値を取り出すための目印です。',
+                          'counts["blue"] で保存した値を取り出せるので、blueCount は2です。最後の counts には "blue" に2、"red" に1が入ります。同じキーに代入すると、値を上書きします。',
+                        ],
+                        [
+                          "辞書で出現回数を数える",
+                          'const tags = ["blue", "red", "blue"];\nconst counts = Object.create(null);\nfor (const tag of tags) {\n  counts[tag] = (counts[tag] ?? 0) + 1;\n}',
+                          "counts[tag] は、tag に入っている名前をキーとして値を取り出します。まだそのキーがなければ undefined になります。?? 0 は値が undefined や null のときに0を使う書き方です。その値に1を足して保存すると、出てきた回数を数えられます。",
+                          '最初の blue は0 + 1で1回、red も0 + 1で1回、次の blue は1 + 1で2回になります。\n最後の counts には "blue" に2、"red" に1が入ります。',
                         ],
                       ]
                     : [
-                        ["値を名前に入れる", "energy = 80"],
                         [
-                          "条件によって分ける",
-                          "if energy >= 50:\n    return True\nreturn False",
+                          "値を保存する",
+                          "energy = 10\nenergy = energy + 3",
+                          "変数は、値に付ける名前です。= の右側を計算して、左側の名前に保存します。",
+                          "energy は最初に10になり、次の行で10 + 3を計算して13に変わります。",
                         ],
                         [
-                          "順番に繰り返す",
-                          "for value in values:\n    total += value",
+                          "文字を扱う",
+                          'name = "navi"\nmessage = "接続先: " + name\nsign = name.upper()',
+                          '文字や言葉は半角の " で囲みます。+ で文字同士をつなぎ、upper() で英字を大文字にします。',
+                          "message は「接続先: navi」、sign は「NAVI」になります。",
                         ],
                         [
-                          "関数から結果を返す",
+                          "計算する",
+                          "total = 3 + 2   # 5\nleft = 3 - 2    # 1\npower = 3 * 2   # 6\nshare = 3 / 2   # 1.5\nrest = 3 % 2    # 1",
+                          "+ は足し算、- は引き算、* は掛け算、/ は割り算です。% は割った余りを求めます。",
+                          "3を2で割ると1余るので、3 % 2 の結果は1です。計算結果はそれぞれ左側の名前に保存されます。",
+                        ],
+                        [
+                          "結果を返す",
                           "def double(value):\n    return value * 2",
+                          "def で処理に名前を付けます。value は受け取る値の名前、return は答えを返す命令です。",
+                          "double(3) を使うと、value に3が入り、3 × 2の答えである6を返します。このサイトでは返した答えで採点します。",
                         ],
                         [
-                          "配列と比較",
-                          "values = [10, 20, 30]\n# 等しい: ==  異なる: !=\n# かつ: and  または: or",
+                          "条件を調べる",
+                          "energy = 20\nsafe = True\nsame = energy == 20\nready = energy >= 10 and safe",
+                          "== は「等しい」、>= は「以上」を調べます。and は両方、or は片方でも条件が成り立てばOKです。",
+                          "20は20と等しいので same は True。20は10以上で safe も True なので、ready も True です。成り立たない場合は False になります。",
                         ],
-                      ]
-                  ).map(([label, example]) => (
-                    <div key={label}>
-                      <b>{label}</b>
-                      <pre>{example}</pre>
-                    </div>
-                  ))}
-                </div>
+                        [
+                          "条件で分ける",
+                          'def label(energy):\n    if energy >= 10:\n        return "OK"\n    else:\n        return "充電"',
+                          "if の条件が成り立つときは、その下の処理をします。成り立たないときは else の下の処理をします。",
+                          "label(20) は「OK」、label(5) は「充電」を返します。どちらか一方の処理だけを実行します。",
+                        ],
+                        [
+                          "リストを使う",
+                          "values = [2, 4]\nfirst = values[0]\ncount = len(values)\nvalues.append(6)",
+                          "[ ] で複数の値をまとめます。[0] は先頭の値、len() は個数を調べます。append() は最後に値を足します。",
+                          "first は2、追加前の個数を調べた count は2です。6を足した後の values は [2, 4, 6] になります。",
+                        ],
+                        [
+                          "二次元配列を使う",
+                          "grid = [\n    [1, 2, 3],\n    [4, 5, 6],\n]\nfirst_row = grid[0]\nvalue = grid[0][1]\nrows = len(grid)\ncolumns = len(grid[0])",
+                          "二次元配列は、値を行と列で並べたものです。行は横の並び、列は縦の並びです。Pythonでは、1行ずつリストにして、さらに1つのリストにまとめて表せます。この例は2行3列です。",
+                          "grid[行の番号][列の番号] で値を取り出します。番号はどちらも0から数えます。\ngrid[0] は最初の行なので、first_row は [1, 2, 3] です。grid[0][1] はその行の2番目の値なので、value は2です。\nlen(grid) は行の数なので rows は2、len(grid[0]) は最初の行にある値の数なので columns は3です。",
+                        ],
+                        [
+                          "リストの一部分を取り出す",
+                          "values = [10, 20, 30, 40]\nmiddle = values[1:3]\ntail = values[2:]\nhead = values[:2]",
+                          "[開始位置:終了位置] で一部分を取り出します。位置は0から数え、開始位置は含み、終了位置は含みません。この書き方をスライスと呼びます。",
+                          "values[1:3] は位置1と2の値なので、middle は [20, 30] です。\nvalues[2:] は終了位置を省略しているので、位置2から最後までの [30, 40] です。\nvalues[:2] は開始位置を省略しているので、先頭から位置2の手前までの [10, 20] です。元の values は変わりません。",
+                        ],
+                        [
+                          "取り出したリストをつなぐ",
+                          "values = [10, 20, 30, 40]\noffset = 2\nback = values[offset:]\nfront = values[:offset]\nrotated = back + front",
+                          "offset は、区切る位置を入れた変数です。この例は2なので、values[offset:] は values[2:] と同じです。リスト同士の + は、左のリストの後ろに右のリストをつなぎます。",
+                          "後半の back は [30, 40]、前半の front は [10, 20] です。\nback + front の結果は [30, 40, 10, 20]。values[offset:] + values[:offset] も同じ結果になります。",
+                        ],
+                        [
+                          "繰り返す",
+                          "values = [2, 4, 6]\ntotal = 0\nfor value in values:\n    total = total + value",
+                          "for は、リストの値を先頭から1つずつ取り出します。そのたびに、字下げした行の処理を実行します。",
+                          "value に2、4、6が順に入り、total は0 → 2 → 6 → 12と変わります。最後の合計は12です。",
+                        ],
+                        [
+                          "条件が成り立つ間は繰り返す",
+                          "remaining = 3\nwhile remaining > 0:\n    remaining = remaining - 1",
+                          "while は、条件が成り立つ間、字下げした行の処理を繰り返します。> は「より大きい」なので、この例では remaining が0より大きい間、1ずつ減らします。",
+                          "remaining は3 → 2 → 1 → 0と変わります。毎回、処理の前に条件を調べ、0になると条件が成り立たなくなって止まります。初めから0なら、一度も繰り返しません。\nこの例で1を引く行がないと、条件がずっと成り立ち、繰り返しが終わりません。",
+                        ],
+                        [
+                          "入れ子で繰り返す",
+                          "grid = [[1, 2], [3, 4]]\nvalues = []\nfor row in grid:\n    for value in row:\n        values.append(value)",
+                          "for の内側に、もう1つ for を書くこともできます。このように内側へ構造を重ねることを「入れ子」と呼びます。grid はリストの中にリストを入れたもので、[1, 2] と [3, 4] の2行を表しています。",
+                          "外側の for は1行ずつ row に入れ、内側の for はその行の値を1つずつ取り出します。1行目の1 → 2を終えてから、2行目の3 → 4に進むので、values は [1, 2, 3, 4] になります。\n内側の for の行は空白4つ、その中の append() の行は空白8つにします。字下げで、どの処理の内側かを表します。",
+                        ],
+                        [
+                          "番号を使って繰り返す",
+                          "positions = []\nfor index in range(3):\n    positions.append(index)",
+                          "range(3) は0、1、2の順に番号を用意します。for はその番号を1つずつ index に入れて、内側の処理をします。index は番号を受け取るために付けた名前です。",
+                          "positions は [0, 1, 2] になります。range(1, 4) なら1、2、3の順です。range(3) では3、range(1, 4) では4が終了の境目で、その番号は含みません。",
+                        ],
+                        [
+                          "後ろから1文字ずつ読む",
+                          'text = "ABC"\nresult = ""\n# range(2, -1, -1) と同じ\nfor index in range(len(text) - 1, -1, -1):\n    result = result + text[index]',
+                          "range(開始する番号, 含めない終了番号, 1回ごとに足す数) で番号の進み方を決めます。この例は最後の文字から先頭へ読みます。",
+                          "① 開始する番号：len(text) は文字数の3です。位置は0から数えるので、最後の位置は3 - 1 = 2です。\n② 含めない終了番号：真ん中の -1 です。-1になる前で止まるので、位置0まで使えます。\n③ 1回ごとに足す数：最後の -1 です。1ずつ減らすので、index は2 → 1 → 0と変わります。\n読む文字は text[2] → text[1] → text[0]、つまり C → B → Aです。result は「CBA」になります。",
+                        ],
+                        [
+                          "見た値を集合に覚えておく",
+                          "seen = set()\nseen.add(4)\nseen.add(4)\nseen.add(7)\ncount = len(seen)",
+                          "set() は同じ値を重ねて持たない「集合」を作ります。add() は値を登録します。seen は「すでに見た値」に付けた名前です。",
+                          "4を2回登録しても、覚えるのは4と7の2種類だけなので count は2です。value not in seen で、まだ見ていない値かを調べられます。\n最初に出てきた順番を残すには、結果を別のリストに追加します。集合には「見たかどうか」、リストには「返す順番」を覚えさせます。",
+                        ],
+                        [
+                          "入っているかを調べる",
+                          "destinations = [4, 7]\nalready = 4 in destinations\nmissing = 2 not in destinations",
+                          "in は「中にあるか」、not in は「中にないか」を調べます。結果は True か False です。リストにも集合にも使えます。",
+                          "4は中にあるので already は True。2は中にないので missing も True です。\nif value not in result: と書くと、結果のリストにまだない値だけを追加できます。例えば [4, 7, 4] を先頭から見ると、結果は [] → [4] → [4, 7] となり、2回目の4は追加しません。",
+                        ],
+                        [
+                          "辞書を使う",
+                          'counts = {}\ncounts["blue"] = 2\nblue_count = counts["blue"]\ncounts["red"] = 1',
+                          '辞書は、目印と値を組にして覚える仕組みです。目印を「キー」と呼びます。{} で空の辞書を作り、counts["blue"] = 2 でキー "blue" に値2を保存します。',
+                          'counts["blue"] で保存した値を取り出せるので、blue_count は2です。最後の counts は {"blue": 2, "red": 1} になります。同じキーに代入すると、値を上書きします。',
+                        ],
+                        [
+                          "辞書で出現回数を数える",
+                          'tags = ["blue", "red", "blue"]\ncounts = {}\nfor tag in tags:\n    counts[tag] = counts.get(tag, 0) + 1',
+                          "counts.get(tag, 0) は、tag に入っている名前をキーとして値を取り出します。まだそのキーがなければ0を使います。その値に1を足して保存すると、出てきた回数を数えられます。",
+                          '最初の blue は0 + 1で1回、red も0 + 1で1回、次の blue は1 + 1で2回になります。\n最後の counts は {"blue": 2, "red": 1} です。',
+                        ],
+                      ]}
+                />
                 <p className="reference-foot">
                   {language === "python"
-                    ? "Pythonは字下げも文法の一部。Tabキーで空白4つを入れられます。"
-                    : "JavaScriptは大文字・小文字を区別します。かっこや引用符の閉じ忘れにも注目。"}
+                    ? "def・if・for・while などの内側は、行頭に空白を4つ足します。Tabキーでも入力できます。"
+                    : "{ } は処理のまとまり、; は文の区切りです。記号は半角で入力します。大文字・小文字も区別します。"}
                 </p>
               </>
             ) : (

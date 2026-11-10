@@ -9,7 +9,7 @@
           ".validate": "newData.isString() && (newData.val() == 'javascript' || newData.val() == 'python') && (!data.exists() || newData.val() == data.val())"
         },
         "stageIndex": {
-          ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 3 && newData.val() % 1 == 0 && (!data.exists() || (newData.val() >= data.val() && newData.val() <= data.val() + 1))"
+          ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 53 && newData.val() % 1 == 0"
         },
         "completed": {
           ".validate": "newData.isBoolean()"

@@ -60,18 +60,22 @@ test("progression is server gated, validates stage IDs, and ends at the final bo
       }),
     /クリア済み/,
   );
+  rooms.handle("a", { type: "selectStage", stageIndex: 0 });
+  assert.equal(room.stageIndex, 0);
+  assert.equal(room.completed, true);
 });
 test("leaving empty rooms removes room and releasing own terminal never releases another player", () => {
   const rooms = new RoomRegistry();
   const room = rooms.create("a", "javascript", "A");
   rooms.join("b", room.code, "javascript", "B");
-  const [first, second] = courses.javascript.stages[0].problems;
+  const first = courses.javascript.stages[0].problems[0];
   rooms.handle("a", { type: "lock", problemId: first.id });
-  rooms.handle("b", { type: "lock", problemId: second.id });
-  rooms.handle("a", { type: "release", problemId: second.id });
-  assert.equal(room.locks[second.id], "b");
+  rooms.handle("a", { type: "release", problemId: first.id });
+  rooms.handle("b", { type: "lock", problemId: first.id });
+  rooms.handle("a", { type: "release", problemId: first.id });
+  assert.equal(room.locks[first.id], "b");
   rooms.leave("a");
-  assert.equal(room.locks[first.id], undefined);
+  assert.equal(room.locks[first.id], "b");
   rooms.leave("b");
   assert.equal(rooms.rooms.size, 0);
   assert.equal(rooms.membership.size, 0);
@@ -79,6 +83,60 @@ test("leaving empty rooms removes room and releasing own terminal never releases
     () => rooms.join("c", room.code, "javascript", "C"),
     /見つかりません/,
   );
+});
+
+test("stage selection rejects locked destinations and preserves shared drafts when revisiting", () => {
+  const rooms = new RoomRegistry();
+  const room = rooms.create("a", "javascript", "A");
+  rooms.join("b", room.code, "javascript", "B");
+  const stages = courses.javascript.stages;
+  for (const stageIndex of [-1, stages.length, 0.5, NaN, Infinity, "1", null])
+    assert.throws(
+      () => rooms.handle("a", { type: "selectStage", stageIndex }),
+      /選び直し/,
+    );
+  assert.throws(
+    () => rooms.handle("a", { type: "selectStage", stageIndex: 1 }),
+    /手前/,
+  );
+  assert.throws(
+    () =>
+      rooms.handle("a", { type: "selectStage", stageIndex: stages.length - 1 }),
+    /手前/,
+  );
+  for (const problem of stages[0].problems) {
+    rooms.handle("a", { type: "lock", problemId: problem.id });
+    rooms.handle("a", { type: "solve", problemId: problem.id });
+  }
+  rooms.handle("a", { type: "selectStage", stageIndex: 1 });
+  const nextProblem = stages[1].problems[0];
+  rooms.handle("b", { type: "lock", problemId: nextProblem.id });
+  rooms.handle("b", {
+    type: "draft",
+    problemId: nextProblem.id,
+    code: "unfinished",
+  });
+  rooms.handle("a", { type: "move", x: 4, z: -2 });
+  rooms.handle("a", { type: "selectStage", stageIndex: 0 });
+  assert.equal(room.stageIndex, 0);
+  assert.deepEqual(room.locks, {});
+  assert.equal(room.drafts[nextProblem.id], "unfinished");
+  assert.ok(
+    stages[0].problems.every((problem) => room.solved.includes(problem.id)),
+  );
+  assert.ok(room.players.every((player) => player.x === 0 && player.z === 3));
+  assert.throws(
+    () => rooms.handle("a", { type: "selectStage", stageIndex: 2 }),
+    /手前/,
+  );
+  rooms.handle("a", { type: "selectStage", stageIndex: 1 });
+  for (const problem of stages[1].problems) {
+    rooms.handle("b", { type: "lock", problemId: problem.id });
+    rooms.handle("b", { type: "solve", problemId: problem.id });
+  }
+  rooms.handle("a", { type: "selectStage", stageIndex: 2 });
+  assert.equal(room.stageIndex, 2);
+  assert.equal(room.completed, false);
 });
 test("moves clamp coordinates and ignore nonfinite input, drafts have a size limit", () => {
   const rooms = new RoomRegistry();

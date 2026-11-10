@@ -56,6 +56,12 @@ export type RoomState = {
 export type WorldProps = {
   phase: "overview" | "entering" | "playing";
   onEntered: () => void;
+  depthProgress: number;
+  completed: boolean;
+  onSelectStage: (index: number) => void;
+  unlockedStageIndices: number[];
+  clearedStageIndices: number[];
+  stageProgress: number;
   solved: string[];
   problems: { id: string; title: string }[];
   activeProblemId: string | null;

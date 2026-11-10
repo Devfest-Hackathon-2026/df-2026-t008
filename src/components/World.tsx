@@ -3,7 +3,10 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import type { WorldProps } from "../types";
 import { buildWorldScenery } from "./worldScenery";
-import { createNetworkSphere } from "./networkSphere";
+import { createNetworkSphere, SPHERE_CENTER } from "./networkSphere";
+import { createCoreJourney } from "./coreJourney";
+import { createStageRings } from "./stageRings";
+import { getStagePosition, layerForStage, STAGE_COUNT } from "../lib/campaign";
 
 // A locally generated voxel diorama. Flat light and nearest-neighbour pixels
 // keep the network's original arcade character even as the world gains depth.
@@ -74,7 +77,7 @@ export default function World(props: WorldProps) {
     renderer.domElement.setAttribute("role", "img");
     renderer.domElement.setAttribute(
       "aria-label",
-      "透明なネットワークの球に包まれたピクセルの仮想世界。球の内側に浮かぶ街と修復する3つの端末。ドラッグで視点変更WASDで移動。",
+      "球の外縁から中心核へ進むピクセルの仮想世界。3つの端末の問題を解くたびに足場が内側へ進みます。ドラッグで視点変更WASDで移動。",
     );
     host.appendChild(renderer.domElement);
 
@@ -93,10 +96,42 @@ export default function World(props: WorldProps) {
     sunlight.shadow.normalBias = 0.05;
     sunlight.shadow.bias = -0.0003;
     scene.add(sunlight);
-    const outsidePosition = new THREE.Vector3(24, 20, 34);
-    const insidePosition = new THREE.Vector3(7.5, 7.8, 10.5);
+    const stageScale = 0.38;
+    const stageRoot = new THREE.Group();
+    stageRoot.scale.setScalar(stageScale);
+    const initialStagePosition = getStagePosition(
+      props.stageIndex,
+      props.stageProgress,
+    );
+    stageRoot.position.set(
+      initialStagePosition.x,
+      initialStagePosition.y,
+      initialStagePosition.z,
+    );
+    stageRoot.rotation.y = Math.atan2(
+      stageRoot.position.x - SPHERE_CENTER.x,
+      stageRoot.position.z - SPHERE_CENTER.z,
+    );
+    scene.add(stageRoot, sunlight.target);
+    const coreJourney = createCoreJourney();
+    scene.add(coreJourney.group);
+    const insideOffset = new THREE.Vector3(2.8, 8.8, 11.3).multiplyScalar(
+      stageScale,
+    );
+    const targetOffset = new THREE.Vector3(0, 1.1, -0.8).multiplyScalar(
+      stageScale,
+    );
+    const outsidePosition = new THREE.Vector3(10, 40, 25);
+    const rotationAxis = new THREE.Vector3(0, 1, 0);
+    const insidePosition = insideOffset
+      .clone()
+      .applyAxisAngle(rotationAxis, stageRoot.rotation.y)
+      .add(stageRoot.position);
     const outsideTarget = new THREE.Vector3(0, 2, -1);
-    const insideTarget = new THREE.Vector3(0, 1.1, -0.8);
+    const insideTarget = targetOffset
+      .clone()
+      .applyAxisAngle(rotationAxis, stageRoot.rotation.y)
+      .add(stageRoot.position);
     const camera = new THREE.PerspectiveCamera(45, 1, 0.08, 160);
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
@@ -106,8 +141,8 @@ export default function World(props: WorldProps) {
     controls.maxPolarAngle = Math.PI / 2.25;
     const setPose = (playing: boolean) => {
       controls.enableDamping = false;
-      controls.minDistance = playing ? 7 : 39;
-      controls.maxDistance = playing ? 16 : 65;
+      controls.minDistance = playing ? 7 * stageScale : 39;
+      controls.maxDistance = playing ? 16 * stageScale : 65;
       camera.position.copy(playing ? insidePosition : outsidePosition);
       controls.target.copy(playing ? insideTarget : outsideTarget);
       camera.fov = playing ? 54 : 45;
@@ -151,7 +186,7 @@ export default function World(props: WorldProps) {
       h: number,
       d: number,
       color: number,
-      parent: THREE.Object3D = scene,
+      parent: THREE.Object3D = stageRoot,
     ): THREE.Mesh<THREE.BoxGeometry, THREE.Material> => {
       const mesh = new THREE.Mesh(geometry, mat(color));
       mesh.scale.set(w, h, d);
@@ -212,7 +247,7 @@ export default function World(props: WorldProps) {
       h: number,
       d: number,
       color: number,
-      parent: THREE.Object3D = scene,
+      parent: THREE.Object3D = stageRoot,
     ) => {
       const box = new THREE.BoxGeometry(w, h, d);
       const edges = new THREE.EdgesGeometry(box);
@@ -228,7 +263,7 @@ export default function World(props: WorldProps) {
       radius: number,
       thickness: number,
       color: number,
-      parent: THREE.Object3D = scene,
+      parent: THREE.Object3D = stageRoot,
       segments = 96,
     ) => {
       const group = new THREE.Group();
@@ -297,21 +332,13 @@ export default function World(props: WorldProps) {
     scene.add(networkSphere.group);
 
     // Pixel server stacks: primary colours, explicit steps, no glossy lighting.
-    for (let i = 0; i < 12 + props.stageIndex * 3; i++) {
+    for (let i = 0; i < 12; i++) {
       const side = i % 2 === 0 ? -1 : 1;
       const x = side * (5 + (i % 3) * 0.55),
         z = -5 + (Math.floor(i / 2) % 6) * 1.5;
       const h = 1.1 + (i % 4) * 0.55;
       voxel(x, h / 2, z, 0.6, h, 0.65, 0xffffff);
-      voxel(
-        x - 0.02,
-        h + 0.08,
-        z,
-        0.8,
-        0.18,
-        0.8,
-        PALETTE[(i + props.stageIndex) % PALETTE.length],
-      );
+      voxel(x - 0.02, h + 0.08, z, 0.8, 0.18, 0.8, PALETTE[i % PALETTE.length]);
       voxel(x, 0.15, z, 0.8, 0.3, 0.8, COLORS.black);
       for (let k = 0; k < Math.floor(h / 0.3); k++)
         voxel(
@@ -329,11 +356,14 @@ export default function World(props: WorldProps) {
       }
     }
 
-    buildWorldScenery(props.stageIndex, voxel);
+    buildWorldScenery(0, voxel, false);
 
     // An original block guardian: the intrusion is a face made of broken data.
     const core = new THREE.Group();
-    core.position.set(0, 3.1, -0.5);
+    core.scale.setScalar(stageScale);
+    core.position
+      .copy(SPHERE_CENTER)
+      .add(new THREE.Vector3(0, 3.1 * stageScale, -0.5 * stageScale));
     scene.add(core);
     const coreBlocks: THREE.Mesh[] = [];
     for (let x = -2; x <= 2; x++)
@@ -399,7 +429,7 @@ export default function World(props: WorldProps) {
     });
     materials.add(beamMaterial);
     const reactorBeams = new THREE.Group();
-    scene.add(reactorBeams);
+    stageRoot.add(reactorBeams);
     for (const x of [-1.48, 1.48])
       for (const z of [-1.98, 0.98]) {
         const pillar = cube(0.12, 0.45, 0.12, COLORS.black);
@@ -429,7 +459,7 @@ export default function World(props: WorldProps) {
     // The exit gateway is a massive network frame with square lock segments.
     const gate = new THREE.Group();
     gate.position.set(1.5, 0, -6);
-    scene.add(gate);
+    stageRoot.add(gate);
     cube(0.38, 4.8, 0.5, COLORS.red, gate).position.set(-2, 2.4, 0);
     cube(0.38, 4.8, 0.5, COLORS.red, gate).position.set(2, 2.4, 0);
     cube(5.1, 0.5, 0.6, COLORS.red, gate).position.set(0, 4.8, 0);
@@ -453,7 +483,7 @@ export default function World(props: WorldProps) {
       b.position.set((j - 1) * 1.05, 2.2, 0.15);
       gateLocks.push(b);
     }
-    const exitLabel = label("NEXT NETWORK", "#152337", 0.35, 256);
+    const exitLabel = label("TO THE CORE", "#152337", 0.35, 256);
     exitLabel.position.set(0, 5.4, 0);
     gate.add(exitLabel);
     for (const side of [-1, 1]) {
@@ -483,7 +513,7 @@ export default function World(props: WorldProps) {
     const terminals = TERMINALS.map((pos, index) => {
       const group = new THREE.Group();
       group.position.copy(pos);
-      scene.add(group);
+      stageRoot.add(group);
       // Workstations have a tiled apron, a console keyboard and cooling fins.
       for (let x = -1; x <= 1; x++)
         for (let z = -1; z <= 1; z++) {
@@ -583,7 +613,7 @@ export default function World(props: WorldProps) {
       instanceMat,
       staticBlocks.length,
     );
-    scene.add(architecture);
+    stageRoot.add(architecture);
     instances.add(architecture);
     architecture.castShadow = true;
     architecture.receiveShadow = true;
@@ -607,6 +637,7 @@ export default function World(props: WorldProps) {
     };
     const avatar = (color: THREE.ColorRepresentation, variant = 0): Avatar => {
       const group = new THREE.Group();
+      group.userData.stageActor = true;
       const suit =
         typeof color === "number" ? color : new THREE.Color(color).getHex();
       // A tiny voxel contact shadow anchors each citizen without a shadow pass.
@@ -658,7 +689,7 @@ export default function World(props: WorldProps) {
           -0.22,
         );
       }
-      scene.add(group);
+      stageRoot.add(group);
       return { group, legs, arms };
     };
     const self = avatar(COLORS.orange, 0);
@@ -694,6 +725,15 @@ export default function World(props: WorldProps) {
         speed: (i % 2 === 0 ? 1 : -1) * (0.025 + (i % 4) * 0.008),
       });
     }
+    const stageRings = createStageRings(stageRoot);
+    scene.add(stageRings.group);
+    // The active plaza is larger than its ring copy and remains selectable outside.
+    const activeStageMaterial = new THREE.MeshBasicMaterial({ visible: false });
+    materials.add(activeStageMaterial);
+    const activeStageHit = new THREE.Mesh(geometry, activeStageMaterial);
+    activeStageHit.scale.set(14, 8, 14);
+    activeStageHit.position.y = 1;
+    stageRoot.add(activeStageHit);
     const keys = new Set<string>();
     const editing = (target: EventTarget | null) =>
       target instanceof HTMLElement &&
@@ -744,32 +784,86 @@ export default function World(props: WorldProps) {
       );
       raycaster.setFromCamera(pointer, camera);
     };
+    const activeFloorRay = new THREE.Ray();
+    const activeFloorInverse = new THREE.Matrix4();
+    const activeFloorPoint = new THREE.Vector3();
+    const activeFloorPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    const overActiveFloor = () => {
+      activeFloorInverse.copy(stageRoot.matrixWorld).invert();
+      activeFloorRay.copy(raycaster.ray).applyMatrix4(activeFloorInverse);
+      if (!activeFloorRay.intersectPlane(activeFloorPlane, activeFloorPoint))
+        return false;
+      return (
+        Math.abs(activeFloorPoint.x) <= 7 &&
+        Math.abs(activeFloorPoint.z) <= 7 &&
+        Math.abs(activeFloorPoint.x) + Math.abs(activeFloorPoint.z) <= 11
+      );
+    };
     const down = (e: PointerEvent) => {
       downX = e.clientX;
       downY = e.clientY;
     };
     const pick = (e: PointerEvent) => {
-      if (latest.current.phase !== "playing") return;
+      const current = latest.current;
+      if (current.phase === "entering") return;
       if (Math.hypot(e.clientX - downX, e.clientY - downY) > 6) return;
       point(e);
-      const hit = raycaster.intersectObjects(clickable)[0];
-      if (hit) {
-        const p =
-          latest.current.problems[hit.object.userData.terminal as number];
-        if (p) latest.current.onSelect(p.id);
+      if (current.phase === "playing") {
+        const hit = raycaster
+          .intersectObjects(clickable)
+          .find(
+            (candidate) =>
+              current.problems[candidate.object.userData.terminal as number],
+          );
+        if (hit) {
+          const problem =
+            current.problems[hit.object.userData.terminal as number];
+          current.onSelect(problem.id);
+          return;
+        }
+        if (overActiveFloor()) return;
       }
+      if (
+        current.phase === "overview" &&
+        raycaster.intersectObject(activeStageHit).length
+      ) {
+        if (current.unlockedStageIndices.includes(current.stageIndex))
+          current.onSelectStage(current.stageIndex);
+        return;
+      }
+      const stageIndex = stageRings.pick(raycaster);
+      if (
+        stageIndex !== null &&
+        current.unlockedStageIndices.includes(stageIndex)
+      )
+        current.onSelectStage(stageIndex);
     };
     const hover = (e: PointerEvent) => {
-      if (latest.current.phase !== "playing") {
-        renderer.domElement.style.cursor =
-          latest.current.phase === "entering" ? "default" : "grab";
+      const current = latest.current;
+      if (current.phase === "entering") {
+        renderer.domElement.style.cursor = "default";
         return;
       }
       point(e);
-      renderer.domElement.style.cursor = raycaster.intersectObjects(clickable)
-        .length
-        ? "pointer"
-        : "grab";
+      const terminal =
+        current.phase === "playing" &&
+        raycaster
+          .intersectObjects(clickable)
+          .some(
+            (hit) => current.problems[hit.object.userData.terminal as number],
+          );
+      const active =
+        current.phase === "overview" &&
+        current.unlockedStageIndices.includes(current.stageIndex) &&
+        raycaster.intersectObject(activeStageHit).length > 0;
+      const floor = current.phase === "playing" && overActiveFloor();
+      const stageIndex =
+        terminal || active || floor ? null : stageRings.pick(raycaster);
+      const available =
+        stageIndex !== null &&
+        current.unlockedStageIndices.includes(stageIndex);
+      renderer.domElement.style.cursor =
+        terminal || active || available ? "pointer" : "grab";
     };
     renderer.domElement.addEventListener("pointerdown", down);
     renderer.domElement.addEventListener("pointerup", pick);
@@ -798,6 +892,9 @@ export default function World(props: WorldProps) {
       forward = new THREE.Vector3(),
       right = new THREE.Vector3(),
       direction = new THREE.Vector3();
+    const previousStagePosition = new THREE.Vector3();
+    const targetStagePosition = new THREE.Vector3();
+    let previousStageIndex = props.stageIndex;
     let phase: WorldProps["phase"] | null = null;
     let flight: {
       path: THREE.CatmullRomCurve3;
@@ -813,6 +910,50 @@ export default function World(props: WorldProps) {
       time += dt;
       const p = latest.current,
         motion = p.reducedMotion ? 0 : 1;
+      // The selected island and camera follow the same circular campaign route.
+      previousStagePosition.copy(stageRoot.position);
+      const previousStageAngle = stageRoot.rotation.y;
+      const destination = getStagePosition(p.stageIndex, p.stageProgress);
+      targetStagePosition.set(destination.x, destination.y, destination.z);
+      const damping = p.reducedMotion ? 1 : 1 - Math.exp(-3 * dt);
+      stageRoot.position.lerp(targetStagePosition, damping);
+      const radialX = stageRoot.position.x - SPHERE_CENTER.x;
+      const radialZ = stageRoot.position.z - SPHERE_CENTER.z;
+      const targetAngle =
+        Math.hypot(radialX, radialZ) > 0.001
+          ? Math.atan2(radialX, radialZ)
+          : previousStageAngle;
+      const angleDelta =
+        Math.atan2(
+          Math.sin(targetAngle - previousStageAngle),
+          Math.cos(targetAngle - previousStageAngle),
+        ) * damping;
+      stageRoot.rotation.y += angleDelta;
+      if (phase === "playing" && p.phase === "playing") {
+        camera.position
+          .sub(previousStagePosition)
+          .applyAxisAngle(rotationAxis, angleDelta)
+          .add(stageRoot.position);
+        controls.target
+          .sub(previousStagePosition)
+          .applyAxisAngle(rotationAxis, angleDelta)
+          .add(stageRoot.position);
+      }
+      insidePosition
+        .copy(insideOffset)
+        .applyAxisAngle(rotationAxis, stageRoot.rotation.y)
+        .add(stageRoot.position);
+      insideTarget
+        .copy(targetOffset)
+        .applyAxisAngle(rotationAxis, stageRoot.rotation.y)
+        .add(stageRoot.position);
+      sunlight.target.position.copy(stageRoot.position);
+      core.visible = p.stageIndex === STAGE_COUNT - 1;
+      if (previousStageIndex !== p.stageIndex) {
+        previousStageIndex = p.stageIndex;
+        keys.clear();
+        self.group.position.set(0, 0, 4.5);
+      }
       if (phase !== p.phase) {
         phase = p.phase;
         keys.clear();
@@ -861,7 +1002,9 @@ export default function World(props: WorldProps) {
       }
       restored = THREE.MathUtils.damp(restored, p.gateOpen ? 1 : 0, 4, dt);
       core.position.y =
-        3.1 + Math.round(Math.sin(time * 1.8) * 3) * 0.045 * motion;
+        SPHERE_CENTER.y +
+        (3.1 + Math.round(Math.sin(time * 1.8) * 3) * 0.045 * motion) *
+          stageScale;
       core.rotation.y = Math.sin(time * 0.3) * 0.15 * motion;
       coreBlocks.forEach((b, i) => {
         b.material = p.gateOpen
@@ -939,6 +1082,7 @@ export default function World(props: WorldProps) {
       if (keys.has("a") || keys.has("arrowleft")) direction.sub(right);
       const walking = p.phase === "playing" && direction.lengthSq() > 0;
       if (walking) {
+        direction.applyAxisAngle(rotationAxis, -stageRoot.rotation.y);
         direction.normalize();
         const next = self.group.position
           .clone()
@@ -990,12 +1134,32 @@ export default function World(props: WorldProps) {
       }
       peers.forEach((peer, id) => {
         if (!ids.has(id)) {
-          scene.remove(peer.group);
+          stageRoot.remove(peer.group);
           peers.delete(id);
         }
       });
       if (phase !== "entering") controls.update();
-      networkSphere.update(camera, time, motion, restored);
+      networkSphere.update(
+        camera,
+        time,
+        motion,
+        p.completed ? 1 : restored * 0.25,
+      );
+      coreJourney.update(
+        p.depthProgress,
+        layerForStage(p.stageIndex),
+        time,
+        motion,
+        p.completed,
+        p.stageIndex,
+      );
+      stageRings.update(
+        stageRoot.position,
+        p.depthProgress,
+        p.completed,
+        p.unlockedStageIndices,
+        p.clearedStageIndices,
+      );
       renderer.render(scene, camera);
     };
     raf = requestAnimationFrame(animate);
@@ -1015,11 +1179,13 @@ export default function World(props: WorldProps) {
       textures.forEach((t) => t.dispose());
       instances.forEach((mesh) => mesh.dispose());
       networkSphere.dispose();
+      coreJourney.dispose();
+      stageRings.dispose();
       sunlight.shadow.dispose();
       renderer.dispose();
       renderer.domElement.remove();
     };
-  }, [props.stageIndex]);
+  }, []);
 
   return (
     <div

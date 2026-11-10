@@ -98,6 +98,9 @@ class LocalRoomClient {
   advance() {
     this.send({ type: "advance" });
   }
+  selectStage(stageIndex: number) {
+    this.send({ type: "selectStage", stageIndex });
+  }
   move(x: number, z: number) {
     if (this.socket?.readyState === WebSocket.OPEN)
       this.socket.send(JSON.stringify({ type: "move", x, z }));
@@ -145,6 +148,9 @@ export class RoomClient {
   }
   advance() {
     this.backend.advance();
+  }
+  selectStage(stageIndex: number) {
+    this.backend.selectStage(stageIndex);
   }
   move(x: number, z: number) {
     this.backend.move(x, z);
