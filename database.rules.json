@@ -1,0 +1,67 @@
+{
+  "rules": {
+    "rooms": {
+      "$code": {
+        ".read": "auth != null && $code.matches(/^[0-9]{6}$/)",
+        ".write": "auth != null && $code.matches(/^[0-9]{6}$/) && (!data.exists() || data.child('players').child(auth.uid).exists() || newData.child('players').child(auth.uid).exists() || !data.child('players').exists())",
+        ".validate": "newData.hasChildren(['language', 'stageIndex', 'completed', 'createdAt', 'updatedAt'])",
+        "language": {
+          ".validate": "newData.isString() && (newData.val() == 'javascript' || newData.val() == 'python') && (!data.exists() || newData.val() == data.val())"
+        },
+        "stageIndex": {
+          ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 3 && newData.val() % 1 == 0 && (!data.exists() || (newData.val() >= data.val() && newData.val() <= data.val() + 1))"
+        },
+        "completed": {
+          ".validate": "newData.isBoolean()"
+        },
+        "createdAt": {
+          ".validate": "newData.isNumber()"
+        },
+        "updatedAt": {
+          ".validate": "newData.isNumber()"
+        },
+        "players": {
+          "$uid": {
+            ".validate": "newData.hasChildren(['id','name','color','x','z'])",
+            "id": {
+              ".validate": "newData.val() == $uid"
+            },
+            "name": {
+              ".validate": "newData.isString() && newData.val().length <= 16 && newData.val().length > 0"
+            },
+            "color": {
+              ".validate": "newData.isString() && newData.val().matches(/^#[0-9a-fA-F]{6}$/)"
+            },
+            "x": {
+              ".validate": "newData.isNumber() && newData.val() >= -8 && newData.val() <= 8"
+            },
+            "z": {
+              ".validate": "newData.isNumber() && newData.val() >= -8 && newData.val() <= 8"
+            },
+            "$other": {
+              ".validate": false
+            }
+          }
+        },
+        "locks": {
+          "$problem": {
+            ".validate": "newData.isString() && newData.parent().parent().child('players').child(newData.val()).exists()"
+          }
+        },
+        "solved": {
+          "$problem": {
+            ".validate": "newData.isBoolean() && newData.val() == true"
+          }
+        },
+        "drafts": {
+          "$problem": {
+            ".validate": "newData.isString() && newData.val().length <= 20000"
+          }
+        },
+        "$other": {
+          ".validate": false
+        }
+      }
+    }
+  }
+}
